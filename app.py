@@ -353,8 +353,3 @@ with tab_atlas:
                     st.write(f"nearest cluster: **{' · '.join(cluster_label)}**")
                 else:
                     st.write("(in low-density / hole region)")
-            st.success(f"{len(paths)} stills + {mp4.name}")
-            cols = st.columns(min(len(paths), 5))
-            for i, p in enumerate(paths[:5]):
-                cols[i].image(str(p), caption=p.name)
-            st.video(str(mp4))
