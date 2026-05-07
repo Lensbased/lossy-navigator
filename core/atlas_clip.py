@@ -36,17 +36,29 @@ def _load():
     return _MODEL, _PROCESSOR, _DEVICE
 
 
+def _to_tensor(feat):
+    """get_*_features sometimes returns a tensor, sometimes a HF output object."""
+    if hasattr(feat, "image_embeds"): return feat.image_embeds
+    if hasattr(feat, "text_embeds"): return feat.text_embeds
+    if hasattr(feat, "pooler_output"): return feat.pooler_output
+    if hasattr(feat, "last_hidden_state"): return feat.last_hidden_state.mean(dim=1)
+    return feat
+
+
 @torch.inference_mode()
 def embed_images(image_paths: Iterable[Path], batch: int = 16) -> np.ndarray:
     model, proc, dev = _load()
     paths = list(image_paths)
-    out = np.zeros((len(paths), model.config.projection_dim), dtype=np.float32)
+    out = None
     for i in range(0, len(paths), batch):
         chunk = paths[i:i + batch]
         imgs = [Image.open(p).convert("RGB") for p in chunk]
         inputs = proc(images=imgs, return_tensors="pt").to(dev)
-        emb = model.get_image_features(**inputs).float().cpu().numpy()
-        emb = emb / np.linalg.norm(emb, axis=1, keepdims=True)
+        feat = _to_tensor(model.get_image_features(**inputs))
+        emb = feat.float().cpu().numpy()
+        emb = emb / (np.linalg.norm(emb, axis=1, keepdims=True) + 1e-8)
+        if out is None:
+            out = np.zeros((len(paths), emb.shape[1]), dtype=np.float32)
         out[i:i + len(chunk)] = emb
     return out
 
@@ -54,11 +66,14 @@ def embed_images(image_paths: Iterable[Path], batch: int = 16) -> np.ndarray:
 @torch.inference_mode()
 def embed_texts(texts: List[str], batch: int = 32) -> np.ndarray:
     model, proc, dev = _load()
-    out = np.zeros((len(texts), model.config.projection_dim), dtype=np.float32)
+    out = None
     for i in range(0, len(texts), batch):
         chunk = texts[i:i + batch]
         inputs = proc(text=chunk, return_tensors="pt", padding=True, truncation=True).to(dev)
-        emb = model.get_text_features(**inputs).float().cpu().numpy()
-        emb = emb / np.linalg.norm(emb, axis=1, keepdims=True)
+        feat = _to_tensor(model.get_text_features(**inputs))
+        emb = feat.float().cpu().numpy()
+        emb = emb / (np.linalg.norm(emb, axis=1, keepdims=True) + 1e-8)
+        if out is None:
+            out = np.zeros((len(texts), emb.shape[1]), dtype=np.float32)
         out[i:i + len(chunk)] = emb
     return out
