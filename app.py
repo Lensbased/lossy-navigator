@@ -326,13 +326,13 @@ with tab_atlas:
         with c1:
             query_text = st.text_input("query a concept (CLIP-text → atlas projection)",
                                        value="", key="atlas_query")
-            query_xy = None
+            query_xyz = None
             density_score = None
             cluster_label = None
             if query_text.strip():
-                query_xy, density_score, cluster_label = mode_atlas.query_concept(idx, query_text)
+                query_xyz, density_score, cluster_label = mode_atlas.query_concept(idx, query_text)
 
-            fig = mode_atlas.build_figure(idx, query_xy=query_xy, query_text=query_text)
+            fig = mode_atlas.build_figure(idx, query_xyz=query_xyz, query_text=query_text)
             st.plotly_chart(fig, use_container_width=True)
 
         with c2:
@@ -345,7 +345,7 @@ with tab_atlas:
             for hi, lbls in enumerate(idx["hole_labels"]):
                 if lbls:
                     st.write(f"`∅{hi}`  {' · '.join(lbls)}")
-            if query_text.strip() and query_xy is not None:
+            if query_text.strip() and query_xyz is not None:
                 st.write("---")
                 st.write(f"**Query:** ❝{query_text}❞")
                 st.write(f"density score: {density_score:.4f}")
