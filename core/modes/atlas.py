@@ -1,10 +1,10 @@
-"""Mode F — atlas browser.
+"""Mode F — atlas browser (3D).
 
 Loads output/atlas/index.npz + index_meta.json, provides:
-    - status() / available()
+    - available()
     - load_index() -> dict
-    - build_figure() -> plotly figure (KDE heatmap + samples + cluster labels)
-    - query_concept(text) -> (xy, density_score, nearest_cluster)
+    - build_figure() -> rotatable plotly Scatter3d (samples, clusters, holes)
+    - query_concept(text) -> (xyz, density_score, nearest_cluster)
 """
 
 from __future__ import annotations
@@ -34,129 +34,135 @@ def load_index() -> Optional[Dict]:
     meta = json.loads(META_PATH.read_text())
     return {
         "img_emb": data["img_emb"],
-        "coords": data["coords"],
+        "coords": data["coords"],                 # (N, 3)
+        "sample_density": data.get("sample_density",
+                                   np.ones(len(data["coords"]), dtype=np.float32)),
         "labels_int": data["cluster_labels_int"],
-        "density": data["density"],
+        "density": data["density"],               # (Gx, Gy, Gz)
         "density_x": data["density_x"],
         "density_y": data["density_y"],
-        "hole_centers": data["hole_centers"],
+        "density_z": data.get("density_z", None),
+        "hole_centers": data["hole_centers"],     # (H, 3)
         **meta,
     }
 
 
-def build_figure(idx: Dict, query_xy: Optional[tuple] = None, query_text: str = ""):
+def build_figure(idx: Dict, query_xyz: Optional[tuple] = None, query_text: str = ""):
     import plotly.graph_objects as go
 
-    coords = idx["coords"]
+    coords = idx["coords"]                  # (N, 3)
     labels_int = idx["labels_int"]
-    cluster_labels = idx["cluster_labels"]   # list[list[str]]
+    cluster_labels = idx["cluster_labels"]
     hole_centers = idx["hole_centers"]
     hole_labels = idx["hole_labels"]
     prompts = idx["prompts"]
     seeds = idx["seeds"]
+    sample_density = idx["sample_density"]
 
     fig = go.Figure()
 
-    # KDE heatmap (background)
-    fig.add_trace(go.Heatmap(
-        x=idx["density_x"], y=idx["density_y"], z=idx["density"],
-        colorscale="Viridis", showscale=False, opacity=0.55,
-        hoverinfo="skip", name="density",
-    ))
-
-    # samples
-    text = [f"{prompts[i]}<br>seed={seeds[i]}<br>cluster={labels_int[i]}"
+    # Sample points — color by cluster, size by local density
+    sd = sample_density
+    sd_norm = (sd - sd.min()) / (sd.max() - sd.min() + 1e-8)
+    sizes = 4 + sd_norm * 10                       # 4..14
+    color = ["#aaaaaa" if l < 0 else f"hsl({(int(l)*47)%360},70%,55%)"
+             for l in labels_int]
+    text = [f"{prompts[i]}<br>seed={seeds[i]}<br>cluster={labels_int[i]}<br>density={sd[i]:.3f}"
             for i in range(len(coords))]
-    color = ["#bbbbbb" if l < 0 else f"hsl({(int(l)*47)%360},70%,55%)" for l in labels_int]
-    fig.add_trace(go.Scatter(
-        x=coords[:, 0], y=coords[:, 1], mode="markers",
-        marker=dict(color=color, size=7, line=dict(width=0.4, color="black")),
-        text=text, hovertemplate="%{text}<extra></extra>", name="samples",
+    fig.add_trace(go.Scatter3d(
+        x=coords[:, 0], y=coords[:, 1], z=coords[:, 2], mode="markers",
+        marker=dict(color=color, size=sizes,
+                    line=dict(width=0.3, color="black"),
+                    opacity=0.85),
+        text=text, hovertemplate="%{text}<extra></extra>",
+        name="samples",
     ))
 
-    # cluster labels (overlay text at centroid)
+    # Cluster labels at centroid
     for ci, lbls in enumerate(cluster_labels):
         m = labels_int == ci
         if not m.any() or not lbls:
             continue
-        cx, cy = coords[m].mean(axis=0)
-        fig.add_annotation(x=float(cx), y=float(cy), text="<b>" + " · ".join(lbls) + "</b>",
-                           showarrow=False,
-                           font=dict(size=11, color="white"),
-                           bgcolor="rgba(0,0,0,0.65)", borderpad=3)
-
-    # hole markers + labels
-    for hi, hxy in enumerate(hole_centers):
-        labs = hole_labels[hi] if hi < len(hole_labels) else []
-        fig.add_trace(go.Scatter(
-            x=[hxy[0]], y=[hxy[1]], mode="markers",
-            marker=dict(symbol="x-thin", size=14, color="red", line=dict(width=2)),
-            text=[f"HOLE near: {' · '.join(labs)}" if labs else "HOLE"],
-            hovertemplate="%{text}<extra></extra>",
-            showlegend=False, name=f"hole_{hi}",
-        ))
-        if labs:
-            fig.add_annotation(x=float(hxy[0]), y=float(hxy[1]), ay=-25, ax=0,
-                               text="∅ " + " · ".join(labs[:2]),
-                               showarrow=True, arrowsize=0.6, arrowwidth=1, arrowcolor="red",
-                               font=dict(size=10, color="red"),
-                               bgcolor="rgba(255,255,255,0.85)", borderpad=2)
-
-    # query overlay
-    if query_xy is not None:
-        fig.add_trace(go.Scatter(
-            x=[query_xy[0]], y=[query_xy[1]], mode="markers+text",
-            marker=dict(symbol="star", size=24, color="yellow",
-                        line=dict(width=2, color="black")),
-            text=[f"  ❝{query_text}❞"], textposition="middle right",
-            textfont=dict(color="black", size=12),
+        cx, cy, cz = coords[m].mean(axis=0)
+        fig.add_trace(go.Scatter3d(
+            x=[cx], y=[cy], z=[cz], mode="text",
+            text=["<b>" + " · ".join(lbls) + "</b>"],
+            textfont=dict(size=12, color="white"),
             hoverinfo="skip", showlegend=False,
         ))
 
+    # Hole markers
+    if len(hole_centers) > 0:
+        h_text = [f"HOLE near: {' · '.join(hole_labels[i])}" if i < len(hole_labels)
+                  else "HOLE" for i in range(len(hole_centers))]
+        fig.add_trace(go.Scatter3d(
+            x=hole_centers[:, 0], y=hole_centers[:, 1], z=hole_centers[:, 2],
+            mode="markers+text",
+            marker=dict(symbol="x", size=8, color="red", line=dict(width=2)),
+            text=["∅ " + " · ".join(hole_labels[i][:2]) if i < len(hole_labels) and hole_labels[i] else "∅"
+                  for i in range(len(hole_centers))],
+            textposition="top center",
+            textfont=dict(size=10, color="red"),
+            hovertext=h_text, hoverinfo="text",
+            name="holes", showlegend=False,
+        ))
+
+    # Query point
+    if query_xyz is not None:
+        fig.add_trace(go.Scatter3d(
+            x=[query_xyz[0]], y=[query_xyz[1]], z=[query_xyz[2]],
+            mode="markers+text",
+            marker=dict(symbol="diamond", size=12, color="yellow",
+                        line=dict(width=2, color="black")),
+            text=[f"  ❝{query_text}❞"], textposition="top center",
+            textfont=dict(color="yellow", size=12),
+            hoverinfo="skip", showlegend=False, name="query",
+        ))
+
     fig.update_layout(
-        height=700, margin=dict(l=10, r=10, t=30, b=10),
-        plot_bgcolor="black",
-        xaxis=dict(showgrid=False, zeroline=False, visible=False),
-        yaxis=dict(showgrid=False, zeroline=False, visible=False, scaleanchor="x"),
+        height=750, margin=dict(l=0, r=0, t=30, b=0),
+        scene=dict(
+            xaxis=dict(showbackground=False, showgrid=False, zeroline=False, visible=False),
+            yaxis=dict(showbackground=False, showgrid=False, zeroline=False, visible=False),
+            zaxis=dict(showbackground=False, showgrid=False, zeroline=False, visible=False),
+            bgcolor="black",
+        ),
         showlegend=False,
-        title=dict(text=f"Atlas — {len(coords)} samples, {len(cluster_labels)} clusters, "
-                        f"{len(hole_centers)} hole regions", x=0.01),
+        title=dict(text=f"Atlas (3D) — {len(coords)} samples · {len(cluster_labels)} clusters · "
+                        f"{len(hole_centers)} holes — drag to rotate, scroll to zoom",
+                   x=0.01, font=dict(size=12)),
     )
     return fig
 
 
 def query_concept(idx: Dict, text: str):
     """Encode a text concept via CLIP-text, project into the atlas via NN
-    in CLIP-image space, return (xy, density_score, nearest_cluster_label).
+    in CLIP-image space, return (xyz, density_score, nearest_cluster_label).
     """
     if not text.strip():
         return None, 0.0, None
     text_emb = atlas_clip.embed_texts([text])[0]
-    # nearest neighbor in image-embedding space
     sims = idx["img_emb"] @ text_emb
     top_k = 8
     top_idx = np.argsort(-sims)[:top_k]
-    # weighted average of top-K coordinates, weights = softmax of sims
-    w = sims[top_idx]
-    w = np.exp(w - w.max())
+    w = np.exp(sims[top_idx] - sims[top_idx].max())
     w = w / w.sum()
-    xy = (idx["coords"][top_idx] * w[:, None]).sum(axis=0)
+    xyz = (idx["coords"][top_idx] * w[:, None]).sum(axis=0)
 
-    # density at xy by bilinear lookup on the density grid
-    gx, gy = idx["density_x"], idx["density_y"]
-    xi = np.clip(np.searchsorted(gx, xy[0]) - 1, 0, len(gx) - 2)
-    yi = np.clip(np.searchsorted(gy, xy[1]) - 1, 0, len(gy) - 2)
-    density_score = float(idx["density"][yi, xi])
+    # density at xyz by nearest grid voxel lookup
+    gx, gy, gz = idx["density_x"], idx["density_y"], idx["density_z"]
+    xi = int(np.clip(np.searchsorted(gx, xyz[0]) - 1, 0, len(gx) - 2))
+    yi = int(np.clip(np.searchsorted(gy, xyz[1]) - 1, 0, len(gy) - 2))
+    zi = int(np.clip(np.searchsorted(gz, xyz[2]) - 1, 0, len(gz) - 2))
+    density_score = float(idx["density"][xi, yi, zi])
 
-    # nearest cluster label
-    labels_int = idx["labels_int"]
-    cluster_labels = idx["cluster_labels"]
-    voted = labels_int[top_idx]
+    # nearest cluster label (vote among top-K samples)
+    voted = idx["labels_int"][top_idx]
     voted = voted[voted >= 0]
     nearest_cluster = None
     if len(voted) > 0:
         cid = int(np.bincount(voted).argmax())
-        if cid < len(cluster_labels):
-            nearest_cluster = cluster_labels[cid]
+        if cid < len(idx["cluster_labels"]):
+            nearest_cluster = idx["cluster_labels"][cid]
 
-    return tuple(map(float, xy)), density_score, nearest_cluster
+    return tuple(map(float, xyz)), density_score, nearest_cluster
