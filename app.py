@@ -22,6 +22,7 @@ from core.modes import pca as mode_pca
 from core.modes import pixel as mode_pixel
 from core.modes import prompt as mode_prompt
 from core.modes import stills_morph as mode_stills_morph
+from core.modes import atlas as mode_atlas
 from core.lossy_runtime import slerp as _slerp_fn
 
 ROOT = Path(__file__).resolve().parent
@@ -74,8 +75,9 @@ def make_progress_cb(bar, log_box):
 
 
 # ---------------- tabs ---------------------------------------------------
-tab_pixel, tab_latent, tab_prompt, tab_pca, tab_stills = st.tabs(
-    ["Pixel (RIFE only)", "Latent walk", "Prompt walk", "PCA axis", "Stills morph (Lossy-aware)"]
+tab_pixel, tab_latent, tab_prompt, tab_pca, tab_stills, tab_atlas = st.tabs(
+    ["Pixel (RIFE only)", "Latent walk", "Prompt walk", "PCA axis",
+     "Stills morph (Lossy-aware)", "Atlas"]
 )
 
 # ----- PIXEL ---------------------------------------------------------------
@@ -296,6 +298,61 @@ with tab_stills:
             for i, p in enumerate(paths[:5]):
                 cols[i].image(str(p), caption=p.name)
             st.video(str(mp4))
+
+
+# ----- ATLAS --------------------------------------------------------------
+with tab_atlas:
+    st.subheader("Atlas — concept density map of Lossy's output space")
+    if not mode_atlas.available():
+        st.warning(
+            "No atlas index found.  Build it once (~45 min on M3 Max):\n\n"
+            "```\npython tools/build_atlas_corpus.py   # generates 180 sample images\n"
+            "python tools/build_atlas_index.py    # CLIP + UMAP + clusters + labels\n```\n\n"
+            "Then refresh this page."
+        )
+    else:
+        @st.cache_resource
+        def _load_atlas():
+            return mode_atlas.load_index()
+        idx = _load_atlas()
+
+        st.caption(
+            f"{idx['n_samples']} Lossy samples → CLIP-image embedding → UMAP 2D + KDE.  "
+            f"Cluster labels show what concepts Lossy renders densely.  "
+            f"Red **∅** marks holes — concepts under-represented or absent."
+        )
+
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            query_text = st.text_input("query a concept (CLIP-text → atlas projection)",
+                                       value="", key="atlas_query")
+            query_xy = None
+            density_score = None
+            cluster_label = None
+            if query_text.strip():
+                query_xy, density_score, cluster_label = mode_atlas.query_concept(idx, query_text)
+
+            fig = mode_atlas.build_figure(idx, query_xy=query_xy, query_text=query_text)
+            st.plotly_chart(fig, use_container_width=True)
+
+        with c2:
+            st.write("**Detected clusters**")
+            for ci, lbls in enumerate(idx["cluster_labels"]):
+                if lbls:
+                    st.write(f"`{ci}`  {' · '.join(lbls)}")
+            st.write("---")
+            st.write("**Detected holes** (under-rendered concepts)")
+            for hi, lbls in enumerate(idx["hole_labels"]):
+                if lbls:
+                    st.write(f"`∅{hi}`  {' · '.join(lbls)}")
+            if query_text.strip() and query_xy is not None:
+                st.write("---")
+                st.write(f"**Query:** ❝{query_text}❞")
+                st.write(f"density score: {density_score:.4f}")
+                if cluster_label:
+                    st.write(f"nearest cluster: **{' · '.join(cluster_label)}**")
+                else:
+                    st.write("(in low-density / hole region)")
             st.success(f"{len(paths)} stills + {mp4.name}")
             cols = st.columns(min(len(paths), 5))
             for i, p in enumerate(paths[:5]):
