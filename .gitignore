@@ -1,0 +1,23 @@
+# venv
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# RIFE binary (download instructions in README)
+bin/
+
+# Outputs
+output/
+cache/
+
+# PCA artifact (run tools/build_pca.py to generate)
+tools/pca_axes.npz
+
+# OS
+.DS_Store
+.idea/
+.vscode/
+
+# Streamlit
+.streamlit/secrets.toml

@@ -1,0 +1,12 @@
+streamlit>=1.30
+torch
+torchvision
+numpy
+pillow
+einops
+omegaconf
+transformers
+diffusers
+accelerate
+sentencepiece
+tiktoken
